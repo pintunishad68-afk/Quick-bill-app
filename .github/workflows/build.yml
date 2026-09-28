@@ -1,1 +1,255 @@
+name: Build Flutter APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+
+    - name: Create POS App and Build APK
+      run: |
+        flutter create --org com.shop.quickbillpos billing_app
+        cd billing_app
+        cat << 'EOF' > lib/main.dart
+        import 'package:flutter/material.dart';
+
+        void main() {
+          runApp(const MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: BillingApp(),
+          ));
+        }
+
+        class Product {
+          final String id;
+          final String name;
+          final double price;
+          int stock;
+
+          Product({required this.id, required this.name, required this.price, required this.stock});
+        }
+
+        class CartItem {
+          final Product product;
+          int quantity;
+
+          CartItem({required this.product, this.quantity = 1});
+          double get total => product.price * quantity;
+        }
+
+        class BillingApp extends StatefulWidget {
+          const BillingApp({super.key});
+
+          @override
+          State<BillingApp> createState() => _BillingAppState();
+        }
+
+        class _BillingAppState extends State<BillingApp> {
+          final List<Product> _products = [
+            Product(id: '1', name: 'Milk 500ml', price: 32, stock: 40),
+            Product(id: '2', name: 'Bread 400g', price: 45, stock: 20),
+            Product(id: '3', name: 'Biscuits Pack', price: 20, stock: 50),
+            Product(id: '4', name: 'Namkeen 200g', price: 50, stock: 25),
+            Product(id: '5', name: 'Tea 250g', price: 110, stock: 15),
+            Product(id: '6', name: 'Mineral Water 1L', price: 20, stock: 60),
+          ];
+
+          final Map<String, CartItem> _cart = {};
+          double _todaySales = 0;
+          int _billsCount = 0;
+
+          double get _cartTotal =>
+              _cart.values.fold(0.0, (sum, item) => sum + item.total);
+
+          int get _cartCount =>
+              _cart.values.fold(0, (sum, item) => sum + item.quantity);
+
+          void _addToCart(Product p) {
+            if (p.stock <= 0) return;
+            setState(() {
+              if (_cart.containsKey(p.id)) {
+                if (_cart[p.id]!.quantity < p.stock) {
+                  _cart[p.id]!.quantity += 1;
+                }
+              } else {
+                _cart[p.id] = CartItem(product: p, quantity: 1);
+              }
+            });
+          }
+
+          void _removeFromCart(Product p) {
+            if (!_cart.containsKey(p.id)) return;
+            setState(() {
+              if (_cart[p.id]!.quantity > 1) {
+                _cart[p.id]!.quantity -= 1;
+              } else {
+                _cart.remove(p.id);
+              }
+            });
+          }
+
+          void _completeBill(String mode) {
+            if (_cart.isEmpty) return;
+            setState(() {
+              for (var item in _cart.values) {
+                item.product.stock -= item.quantity;
+              }
+              _todaySales += _cartTotal;
+              _billsCount += 1;
+              _cart.clear();
+            });
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Bill Generated: $mode Success!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+
+          @override
+          Widget build(BuildContext context) {
+            return Scaffold(
+              backgroundColor: Colors.grey.shade100,
+              appBar: AppBar(
+                title: const Text('Shop Billing (Non-GST)', style: TextStyle(fontWeight: FontWeight.bold)),
+                backgroundColor: Colors.green.shade800,
+                foregroundColor: Colors.white,
+              ),
+              body: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    color: Colors.green.shade50,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Column(
+                          children: [
+                            const Text('Today Sales', style: TextStyle(color: Colors.black54, fontSize: 13)),
+                            Text('Rs. ${_todaySales.toStringAsFixed(0)}',
+                                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green.shade900)),
+                          ],
+                        ),
+                        Container(height: 35, width: 1, color: Colors.grey.shade400),
+                        Column(
+                          children: [
+                            const Text('Total Bills', style: TextStyle(color: Colors.black54, fontSize: 13)),
+                            Text('$_billsCount Bills',
+                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView.separated(
+                      padding: const EdgeInsets.all(8),
+                      itemCount: _products.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final p = _products[index];
+                        final inCart = _cart[p.id]?.quantity ?? 0;
+
+                        return Card(
+                          elevation: 1,
+                          child: ListTile(
+                            title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text('Rate: Rs. ${p.price.toStringAsFixed(0)} | Stock: ${p.stock} pcs'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (inCart > 0) ...[
+                                  IconButton(
+                                    icon: const Icon(Icons.remove_circle, color: Colors.red),
+                                    onPressed: () => _removeFromCart(p),
+                                  ),
+                                  Text('$inCart', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                ],
+                                IconButton(
+                                  icon: Icon(Icons.add_circle, color: Colors.green.shade800),
+                                  onPressed: p.stock > inCart ? () => _addToCart(p) : null,
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    color: Colors.white,
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('Items: $_cartCount pcs', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            Text('Total: Rs. ${_cartTotal.toStringAsFixed(0)}',
+                                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green.shade900)),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.orange.shade800,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
+                                onPressed: _cart.isEmpty ? null : () => _completeBill('Cash'),
+                                child: const Text('Cash Bill', style: TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue.shade800,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
+                                onPressed: _cart.isEmpty ? null : () => _completeBill('UPI'),
+                                child: const Text('UPI Bill', style: TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+        }
+        EOF
+        flutter build apk --release
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: Shop-Billing-App-APK
+        path: billing_app/build/app/outputs/flutter-apk/app-release.apk
 
