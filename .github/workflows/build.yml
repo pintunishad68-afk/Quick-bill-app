@@ -1,4 +1,4 @@
-name: Build Flutter APK
+name: Build Universal Shop POS APK
 
 on:
   push:
@@ -24,221 +24,461 @@ jobs:
       with:
         channel: 'stable'
 
-    - name: Create POS App and Build APK
+    - name: Build Universal POS App
       run: |
-        flutter create --org com.shop.quickbillpos billing_app
-        cd billing_app
+        flutter create --org com.merchant.pos universal_pos
+        cd universal_pos
+        
+        cat << 'EOF' > pubspec.yaml
+        name: universal_pos
+        description: "Universal Billing POS App for All Retail Shops"
+        publish_to: 'none'
+        version: 1.0.0+1
+        environment:
+          sdk: '>=3.0.0 <4.0.0'
+        dependencies:
+          flutter:
+            sdk: flutter
+          shared_preferences: ^2.2.2
+        flutter:
+          uses-material-design: true
+        EOF
+
+        flutter pub get
+
         cat << 'EOF' > lib/main.dart
+        import 'dart:convert';
         import 'package:flutter/material.dart';
+        import 'package:shared_preferences/shared_preferences.dart';
 
         void main() {
           runApp(const MaterialApp(
             debugShowCheckedModeBanner: false,
-            home: BillingApp(),
+            home: UniversalBillingApp(),
           ));
         }
 
-        class Product {
-          final String id;
-          final String name;
-          final double price;
+        class Item {
+          String id;
+          String name;
+          double price;
           int stock;
 
-          Product({required this.id, required this.name, required this.price, required this.stock});
+          Item({required this.id, required this.name, required this.price, required this.stock});
+
+          Map<String, dynamic> toMap() => {'id': id, 'name': name, 'price': price, 'stock': stock};
+          factory Item.fromMap(Map<String, dynamic> m) => Item(
+            id: m['id'],
+            name: m['name'],
+            price: (m['price'] as num).toDouble(),
+            stock: m['stock'] as int,
+          );
         }
 
-        class CartItem {
-          final Product product;
-          int quantity;
+        class BillRecord {
+          final String id;
+          final String date;
+          final double amount;
+          final String mode;
+          final int itemCount;
 
-          CartItem({required this.product, this.quantity = 1});
-          double get total => product.price * quantity;
+          BillRecord({required this.id, required this.date, required this.amount, required this.mode, required this.itemCount});
+
+          Map<String, dynamic> toMap() => {'id': id, 'date': date, 'amount': amount, 'mode': mode, 'itemCount': itemCount};
+          factory BillRecord.fromMap(Map<String, dynamic> m) => BillRecord(
+            id: m['id'],
+            date: m['date'],
+            amount: (m['amount'] as num).toDouble(),
+            mode: m['mode'],
+            itemCount: m['itemCount'],
+          );
         }
 
-        class BillingApp extends StatefulWidget {
-          const BillingApp({super.key});
+        class UniversalBillingApp extends StatefulWidget {
+          const UniversalBillingApp({super.key});
 
           @override
-          State<BillingApp> createState() => _BillingAppState();
+          State<UniversalBillingApp> createState() => _UniversalBillingAppState();
         }
 
-        class _BillingAppState extends State<BillingApp> {
-          final List<Product> _products = [
-            Product(id: '1', name: 'Milk 500ml', price: 32, stock: 40),
-            Product(id: '2', name: 'Bread 400g', price: 45, stock: 20),
-            Product(id: '3', name: 'Biscuits Pack', price: 20, stock: 50),
-            Product(id: '4', name: 'Namkeen 200g', price: 50, stock: 25),
-            Product(id: '5', name: 'Tea 250g', price: 110, stock: 15),
-            Product(id: '6', name: 'Mineral Water 1L', price: 20, stock: 60),
-          ];
+        class _UniversalBillingAppState extends State<UniversalBillingApp> {
+          int _tabIndex = 0;
+          String _shopName = "मेरी दुकान";
+          List<Item> _items = [];
+          List<BillRecord> _bills = [];
+          final Map<String, int> _cart = {};
+          String _searchQuery = "";
 
-          final Map<String, CartItem> _cart = {};
-          double _todaySales = 0;
-          int _billsCount = 0;
+          @override
+          void initState() {
+            super.initState();
+            _loadData();
+          }
 
-          double get _cartTotal =>
-              _cart.values.fold(0.0, (sum, item) => sum + item.total);
-
-          int get _cartCount =>
-              _cart.values.fold(0, (sum, item) => sum + item.quantity);
-
-          void _addToCart(Product p) {
-            if (p.stock <= 0) return;
+          Future<void> _loadData() async {
+            final prefs = await SharedPreferences.getInstance();
             setState(() {
-              if (_cart.containsKey(p.id)) {
-                if (_cart[p.id]!.quantity < p.stock) {
-                  _cart[p.id]!.quantity += 1;
-                }
-              } else {
-                _cart[p.id] = CartItem(product: p, quantity: 1);
+              _shopName = prefs.getString('shop_name') ?? "दुकान बिलिंग काउंटर";
+              final itemsRaw = prefs.getString('items_list');
+              if (itemsRaw != null) {
+                final List decoded = jsonDecode(itemsRaw);
+                _items = decoded.map((e) => Item.fromMap(e)).toList();
+              }
+              final billsRaw = prefs.getString('bills_list');
+              if (billsRaw != null) {
+                final List decoded = jsonDecode(billsRaw);
+                _bills = decoded.map((e) => BillRecord.fromMap(e)).toList();
               }
             });
           }
 
-          void _removeFromCart(Product p) {
-            if (!_cart.containsKey(p.id)) return;
+          Future<void> _saveItems() async {
+            final prefs = await SharedPreferences.getInstance();
+            prefs.setString('items_list', jsonEncode(_items.map((e) => e.toMap()).toList()));
+          }
+
+          Future<void> _saveBills() async {
+            final prefs = await SharedPreferences.getInstance();
+            prefs.setString('bills_list', jsonEncode(_bills.map((e) => e.toMap()).toList()));
+          }
+
+          double get _todaySales {
+            return _bills.fold(0.0, (s, b) => s + b.amount);
+          }
+
+          double get _cartTotal {
+            double sum = 0;
+            _cart.forEach((id, qty) {
+              final found = _items.where((i) => i.id == id);
+              if (found.isNotEmpty) {
+                sum += found.first.price * qty;
+              }
+            });
+            return sum;
+          }
+
+          int get _cartItemCount => _cart.values.fold(0, (s, q) => s + q);
+
+          void _addToCart(Item item) {
+            if (item.stock <= 0) return;
             setState(() {
-              if (_cart[p.id]!.quantity > 1) {
-                _cart[p.id]!.quantity -= 1;
-              } else {
-                _cart.remove(p.id);
+              final current = _cart[item.id] ?? 0;
+              if (current < item.stock) {
+                _cart[item.id] = current + 1;
               }
             });
           }
 
-          void _completeBill(String mode) {
+          void _removeFromCart(Item item) {
+            if (!_cart.containsKey(item.id)) return;
+            setState(() {
+              final current = _cart[item.id]!;
+              if (current > 1) {
+                _cart[item.id] = current - 1;
+              } else {
+                _cart.remove(item.id);
+              }
+            });
+          }
+
+          void _completeSale(String mode) {
             if (_cart.isEmpty) return;
             setState(() {
-              for (var item in _cart.values) {
-                item.product.stock -= item.quantity;
-              }
-              _todaySales += _cartTotal;
-              _billsCount += 1;
+              _cart.forEach((id, qty) {
+                final found = _items.where((i) => i.id == id);
+                if (found.isNotEmpty) {
+                  found.first.stock -= qty;
+                }
+              });
+
+              final now = DateTime.now();
+              final dateStr = "${now.day}/${now.month} ${now.hour}:${now.minute.toString().padLeft(2, '0')}";
+              final newBill = BillRecord(
+                id: "BIL-${now.millisecondsSinceEpoch.toString().substring(7)}",
+                date: dateStr,
+                amount: _cartTotal,
+                mode: mode,
+                itemCount: _cartItemCount,
+              );
+              _bills.insert(0, newBill);
               _cart.clear();
             });
 
+            _saveItems();
+            _saveBills();
+
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Bill Generated: $mode Success!'),
-                backgroundColor: Colors.green,
+                content: Text('बिल कटा: $mode सफल!'),
+                backgroundColor: Colors.green.shade800,
+              ),
+            );
+          }
+
+          void _showItemDialog([Item? item]) {
+            final nameCtrl = TextEditingController(text: item?.name ?? "");
+            final priceCtrl = TextEditingController(text: item != null ? item.price.toStringAsFixed(0) : "");
+            final stockCtrl = TextEditingController(text: item != null ? item.stock.toString() : "");
+
+            showDialog(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: Text(item == null ? "नया सामान जोड़ें" : "सामान एडिट करें"),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: "सामान का नाम (Product Name)")),
+                    TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "बिक्री रेट (₹)")),
+                    TextField(controller: stockCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "स्टॉक संख्या (Quantity)")),
+                  ],
+                ),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("रद्द करें")),
+                  ElevatedButton(
+                    onPressed: () {
+                      final n = nameCtrl.text.trim();
+                      final p = double.tryParse(priceCtrl.text) ?? 0;
+                      final s = int.tryParse(stockCtrl.text) ?? 0;
+                      if (n.isNotEmpty && p > 0) {
+                        setState(() {
+                          if (item == null) {
+                            _items.add(Item(id: DateTime.now().millisecondsSinceEpoch.toString(), name: n, price: p, stock: s));
+                          } else {
+                            item.name = n;
+                            item.price = p;
+                            item.stock = s;
+                          }
+                        });
+                        _saveItems();
+                        Navigator.pop(ctx);
+                      }
+                    },
+                    child: const Text("सेव करें"),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          void _showShopNameDialog() {
+            final ctrl = TextEditingController(text: _shopName);
+            showDialog(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text("दुकान का नाम बदलें"),
+                content: TextField(controller: ctrl, decoration: const InputDecoration(labelText: "दुकान / व्यापार का नाम")),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("रद्द")),
+                  ElevatedButton(
+                    onPressed: () async {
+                      if (ctrl.text.trim().isNotEmpty) {
+                        setState(() => _shopName = ctrl.text.trim());
+                        final prefs = await SharedPreferences.getInstance();
+                        prefs.setString('shop_name', _shopName);
+                        Navigator.pop(ctx);
+                      }
+                    },
+                    child: const Text("सेव करें"),
+                  ),
+                ],
               ),
             );
           }
 
           @override
           Widget build(BuildContext context) {
+            final filtered = _items.where((i) => i.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+
             return Scaffold(
-              backgroundColor: Colors.grey.shade100,
               appBar: AppBar(
-                title: const Text('Shop Billing (Non-GST)', style: TextStyle(fontWeight: FontWeight.bold)),
-                backgroundColor: Colors.green.shade800,
+                title: InkWell(
+                  onTap: _showShopNameDialog,
+                  child: Row(
+                    children: [
+                      Text(_shopName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      const SizedBox(width: 6),
+                      const Icon(Icons.edit, size: 16),
+                    ],
+                  ),
+                ),
+                backgroundColor: const Color(0xFF1B5E20),
                 foregroundColor: Colors.white,
               ),
-              body: Column(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    color: Colors.green.shade50,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+              body: _tabIndex == 0
+                  // 1. BILLING COUNTER
+                  ? Column(
                       children: [
-                        Column(
-                          children: [
-                            const Text('Today Sales', style: TextStyle(color: Colors.black54, fontSize: 13)),
-                            Text('Rs. ${_todaySales.toStringAsFixed(0)}',
-                                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green.shade900)),
-                          ],
-                        ),
-                        Container(height: 35, width: 1, color: Colors.grey.shade400),
-                        Column(
-                          children: [
-                            const Text('Total Bills', style: TextStyle(color: Colors.black54, fontSize: 13)),
-                            Text('$_billsCount Bills',
-                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black)),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: ListView.separated(
-                      padding: const EdgeInsets.all(8),
-                      itemCount: _products.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final p = _products[index];
-                        final inCart = _cart[p.id]?.quantity ?? 0;
-
-                        return Card(
-                          elevation: 1,
-                          child: ListTile(
-                            title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                            subtitle: Text('Rate: Rs. ${p.price.toStringAsFixed(0)} | Stock: ${p.stock} pcs'),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (inCart > 0) ...[
-                                  IconButton(
-                                    icon: const Icon(Icons.remove_circle, color: Colors.red),
-                                    onPressed: () => _removeFromCart(p),
-                                  ),
-                                  Text('$inCart', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          color: const Color(0xFFE8F5E9),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text("आज की कुल बिक्री", style: TextStyle(color: Colors.black54, fontSize: 13)),
+                                  Text("₹${_todaySales.toStringAsFixed(0)}",
+                                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF1B5E20))),
                                 ],
-                                IconButton(
-                                  icon: Icon(Icons.add_circle, color: Colors.green.shade800),
-                                  onPressed: p.stock > inCart ? () => _addToCart(p) : null,
-                                ),
-                              ],
-                            ),
+                              ),
+                              Text("${_bills.length} बिल काटे गए", style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                            ],
                           ),
-                        );
-                      },
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    color: Colors.white,
-                    child: Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text('Items: $_cartCount pcs', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                            Text('Total: Rs. ${_cartTotal.toStringAsFixed(0)}',
-                                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green.shade900)),
-                          ],
                         ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.orange.shade800,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(vertical: 12),
-                                ),
-                                onPressed: _cart.isEmpty ? null : () => _completeBill('Cash'),
-                                child: const Text('Cash Bill', style: TextStyle(fontWeight: FontWeight.bold)),
-                              ),
+                        Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: TextField(
+                            decoration: InputDecoration(
+                              hintText: "सामान खोजें...",
+                              prefixIcon: const Icon(Icons.search),
+                              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue.shade800,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                            onChanged: (v) => setState(() => _searchQuery = v),
+                          ),
+                        ),
+                        Expanded(
+                          child: filtered.isEmpty
+                              ? Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.inventory_2_outlined, size: 48, color: Colors.grey),
+                                      const SizedBox(height: 8),
+                                      const Text("कोई सामान नहीं है"),
+                                      TextButton(onPressed: () => _showItemDialog(), child: const Text("+ नया सामान जोड़ें")),
+                                    ],
+                                  ),
+                                )
+                              : ListView.separated(
+                                  itemCount: filtered.length,
+                                  separatorBuilder: (_, __) => const Divider(height: 1),
+                                  itemBuilder: (context, idx) {
+                                    final item = filtered[idx];
+                                    final inCart = _cart[item.id] ?? 0;
+                                    return ListTile(
+                                      title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                      subtitle: Text("रेट: ₹${item.price.toStringAsFixed(0)} | स्टॉक: ${item.stock} पीस"),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (inCart > 0) ...[
+                                            IconButton(icon: const Icon(Icons.remove_circle, color: Colors.red), onPressed: () => _removeFromCart(item)),
+                                            Text("$inCart", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                          ],
+                                          IconButton(
+                                            icon: const Icon(Icons.add_circle, color: Color(0xFF1B5E20)),
+                                            onPressed: item.stock > inCart ? () => _addToCart(item) : null,
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
                                 ),
-                                onPressed: _cart.isEmpty ? null : () => _completeBill('UPI'),
-                                child: const Text('UPI Bill', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6, offset: const Offset(0, -2))]),
+                          child: Column(
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text("आइटम: $_cartItemCount", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                  Text("कुल: ₹${_cartTotal.toStringAsFixed(0)}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1B5E20))),
+                                ],
                               ),
-                            ),
-                          ],
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade800, foregroundColor: Colors.white),
+                                      onPressed: _cart.isEmpty ? null : () => _completeSale("Cash"),
+                                      child: const Text("Cash बिल"),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade800, foregroundColor: Colors.white),
+                                      onPressed: _cart.isEmpty ? null : () => _completeSale("UPI"),
+                                      child: const Text("UPI बिल"),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ],
-                    ),
-                  ),
+                    )
+                  : _tabIndex == 1
+                      // 2. STOCK MANAGEMENT
+                      ? Scaffold(
+                          floatingActionButton: FloatingActionButton.extended(
+                            backgroundColor: const Color(0xFF1B5E20),
+                            foregroundColor: Colors.white,
+                            onPressed: () => _showItemDialog(),
+                            icon: const Icon(Icons.add),
+                            label: const Text("नया सामान"),
+                          ),
+                          body: _items.isEmpty
+                              ? const Center(child: Text("सामान जोड़ने के लिए + बटन दबाएँ"))
+                              : ListView.builder(
+                                  itemCount: _items.length,
+                                  itemBuilder: (ctx, i) {
+                                    final item = _items[i];
+                                    return ListTile(
+                                      title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                      subtitle: Text("रेट: ₹${item.price.toStringAsFixed(0)} | उपलब्ध: ${item.stock}"),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(icon: const Icon(Icons.edit, color: Colors.blueGrey), onPressed: () => _showItemDialog(item)),
+                                          IconButton(
+                                            icon: const Icon(Icons.delete, color: Colors.red),
+                                            onPressed: () {
+                                              setState(() {
+                                                _items.removeAt(i);
+                                                _cart.remove(item.id);
+                                              });
+                                              _saveItems();
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                        )
+                      // 3. BILL HISTORY
+                      : ListView.builder(
+                          itemCount: _bills.length,
+                          itemBuilder: (ctx, i) {
+                            final b = _bills[i];
+                            return Card(
+                              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: b.mode == 'Cash' ? Colors.amber.shade100 : Colors.blue.shade100,
+                                  child: Icon(b.mode == 'Cash' ? Icons.money : Icons.qr_code),
+                                ),
+                                title: Text("₹${b.amount.toStringAsFixed(0)}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                                subtitle: Text("${b.id} • ${b.date} • ${b.itemCount} आइटम"),
+                                trailing: Text(b.mode, style: const TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                            );
+                          },
+                        ),
+              bottomNavigationBar: NavigationBar(
+                selectedIndex: _tabIndex,
+                onDestinationSelected: (idx) => setState(() => _tabIndex = idx),
+                destinations: const [
+                  NavigationDestination(icon: Icon(Icons.point_of_sale), label: "बिलिंग"),
+                  NavigationDestination(icon: Icon(Icons.inventory_2), label: "स्टॉक सामान"),
+                  NavigationDestination(icon: Icon(Icons.receipt_long), label: "बिक्री रसीदें"),
                 ],
               ),
             );
@@ -250,6 +490,5 @@ jobs:
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: Shop-Billing-App-APK
-        path: billing_app/build/app/outputs/flutter-apk/app-release.apk
-
+        name: Universal-Shop-POS-APK
+        path: universal_pos/build/app/outputs/flutter-apk/app-release.apk
